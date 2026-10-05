@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lab Mark Script Generator</title>
+<style>
+body { font-family: Arial, sans-serif; max-width: 800px; margin: 20px auto; padding: 0 20px; background:#f4f4f9; color:#333; }
+h1 { text-align:center; }
+.form-group { margin-bottom: 15px; }
+label.title { display:block; font-weight:bold; margin-bottom:5px; }
+.checks { display:flex; gap:20px; flex-wrap:wrap; background:#fff; padding:10px; border:1px solid #ccc; border-radius:5px; }
+.checks label { font-weight:normal; cursor:pointer; }
+select, textarea, button { width:100%; padding:10px; box-sizing:border-box; border:1px solid #ccc; border-radius:5px; font-family:monospace; }
+textarea { height:150px; resize:vertical; }
+.btn-group { display:flex; gap:10px; margin-top:10px; }
+button { background:#007bff; color:#fff; font-weight:bold; cursor:pointer; border:none; }
+button:hover { background:#0056b3; }
+.copy-btn { background:#28a745; } .copy-btn:hover { background:#218838; }
+#hint { font-size:13px; color:#555; margin-top:6px; }
+#warn { color:#b00020; font-size:13px; white-space:pre-wrap; margin-top:6px; }
+</style>
+</head>
+<body>
+<h1>Lab Mark → JavaScript Generator</h1>
+
+<div class="form-group">
+  <label class="title" for="fieldSelect">Select Field:</label>
+  <select id="fieldSelect">
+    <option value="0">Lab (40)</option>
+    <option value="1">LReport (25)</option>
+    <option value="2">LPerformance (25)</option>
+  </select>
+  <div id="hint"></div>
+</div>
+
+<div class="form-group">
+  <label class="title" for="inputData">Paste ID and marks (e.g., 148 30):</label>
+  <textarea id="inputData" placeholder="Paste data here...
+148 30
+727 35"></textarea>
+</div>
+
+<div class="btn-group">
+  <button id="gen">Generate JavaScript</button>
+  <button class="copy-btn" id="copy">Copy Code</button>
+</div>
+<div id="warn"></div>
+
+<div class="form-group" style="margin-top:20px;">
+  <label class="title" for="outputCode">Generated JavaScript Code:</label>
+  <textarea id="outputCode" readonly placeholder="Generated script will appear here..." style="height:420px;"></textarea>
+</div>
+
+<script>
+const FIELDS = [
+  {idx:0, name:'Lab',          max:40},
+  {idx:1, name:'LReport',      max:25},
+  {idx:2, name:'LPerformance', max:25}
+];
+const $ = id => document.getElementById(id);
+
+function selected() { return [FIELDS[parseInt($('fieldSelect').value, 10)]]; }
+
+function updateHint() {
+  const f = selected()[0];
+  $('hint').textContent = 'Each line: ID ' + f.name + ' mark (max ' + f.max + '), e.g. 148 ' + Math.round(f.max * 0.75);
+}
+$('fieldSelect').addEventListener('change', updateHint);
+updateHint();
+
+$('gen').addEventListener('click', () => {
+  const sel = selected();
+  const warn = [];
+  if (!sel.length) { $('warn').textContent = 'Select at least one field.'; return; }
+
+  const data = {};
+  $('inputData').value.split('\n').forEach((line, n) => {
+    line = line.trim();
+    if (!line) return;
+    const p = line.split(/[\s,\t]+/);
+    const id = p[0].replace(/-/g, '');
+    const marks = p.slice(1);
+    if (marks.length < sel.length) { warn.push(`Line ${n+1}: expected ${sel.length} mark(s), got ${marks.length}`); return; }
+    const obj = {};
+    sel.forEach((f, i) => {
+      const v = parseFloat(marks[i]);
+      if (isNaN(v)) { warn.push(`Line ${n+1}: "${marks[i]}" is not a number (${f.name})`); return; }
+      if (v > f.max) warn.push(`Line ${n+1}: ${f.name} ${v} exceeds max ${f.max}`);
+      obj[f.idx] = v;
+    });
+    data[id] = obj;
+  });
+
+  $('warn').textContent = warn.join('\n');
+
+  const code = `(function () {
+  // Auto-generated: Lab marks (${sel.map(f => f.name).join(', ')})
+  const marks = ${JSON.stringify(data, null, 2)};
+  const FIELD_NAMES = {0: 'Lab', 1: 'LReport', 2: 'LPerformance'};
+
+  const realClick = el => {
+    ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(t =>
+      el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window })));
+  };
+  const setVal = (el, v) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    realClick(el);              // click the cell first
+    el.focus();
+    el.dispatchEvent(new Event('focus', { bubbles: true }));
+    setter.call(el, v);
+    el.dispatchEvent(new Event('input',  { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur',   { bubbles: true }));
+    el.blur();
+  };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  const rows = Array.from(document.querySelectorAll('#excel-table tbody tr'));
+
+  // Map each pasted ID to the matching row(s): matches the end of the reg ID or short ID
+  const rowTokens = rows.map(r => {
+    const td = r.querySelector('td');
+    return td ? td.innerText.split(/\\s+/).filter(Boolean).map(t => t.replace(/-/g, '')) : [];
+  });
+
+  (async () => {
+  let done = 0; const notFound = []; const ambiguous = []; const touched = [];
+  for (const id of Object.keys(marks)) {
+    const hits = [];
+    rowTokens.forEach((tokens, i) => { if (tokens.some(t => t.endsWith(id))) hits.push(i); });
+    if (hits.length === 0) { notFound.push(id); continue; }
+    if (hits.length > 1) { ambiguous.push(id); continue; }
+    const row = rows[hits[0]];
+    const inputs = row.querySelectorAll('input[type="number"]');
+    for (const [idx, v] of Object.entries(marks[id])) {
+      if (inputs[idx]) { setVal(inputs[idx], v); await sleep(150); }
+      else console.warn('Input not found for', id, FIELD_NAMES[idx]);
+    }
+    // Press the Save button on the right of this row
+    const saveBtn = Array.from(row.querySelectorAll('button')).find(b => /save/i.test(b.innerText));
+    if (saveBtn) {
+      await sleep(200);
+      realClick(saveBtn);
+      await sleep(700);         // wait for the save request to finish
+    } else {
+      console.warn('Save button not found for', id);
+    }
+    done++;
+  }
+
+  console.log('Filled ' + done + ' of ' + Object.keys(marks).length + ' students.');
+  if (notFound.length)  console.warn('ID not found:', notFound.join(', '));
+  if (ambiguous.length) console.warn('ID matches multiple rows (use a longer ID):', ambiguous.join(', '));
+
+  console.log('Done. Each row was saved with its own Save button.');
+  })();
+})();`;
+
+  $('outputCode').value = code;
+});
+
+$('copy').addEventListener('click', () => {
+  const t = $('outputCode');
+  if (!t.value) return;
+  t.select();
+  navigator.clipboard ? navigator.clipboard.writeText(t.value) : document.execCommand('copy');
+});
+</script>
+</body>
+</html>
